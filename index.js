@@ -1,39 +1,56 @@
 const http = require('http');
-const httpProxy = require('http-proxy');
-
-const proxy = httpProxy.createProxyServer({
-  target: 'https://firestore.googleapis.com',
-  changeOrigin: true,
-  secure: true
-});
+const https = require('https');
 
 const server = http.createServer((req, res) => {
   const origin = req.headers.origin || '*';
 
-
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || '*');
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+    'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Max-Age': '86400',
+  };
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(200);
+    res.writeHead(200, corsHeaders);
     res.end();
     return;
   }
 
-  delete req.headers['host'];
-  delete req.headers['origin'];
-  delete req.headers['referer'];
+  const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
+  const options = {
+    method: req.method,
+    hostname: 'firestore.googleapis.com',
+    path: targetUrl.pathname + targetUrl.search,
+    headers: { ...req.headers }
+  };
 
-  proxy.web(req, res, (err) => {
-    console.error('Proxy error:', err);
-    res.writeHead(500);
-    res.end('Proxy error');
+  delete options.headers['host'];
+  delete options.headers['origin'];
+  delete options.headers['referer'];
+
+  const proxyReq = https.request(options, (proxyRes) => {
+    const resHeaders = { ...proxyRes.headers, ...corsHeaders };
+
+    if (proxyRes.headers['set-cookie']) {
+      resHeaders['set-cookie'] = proxyRes.headers['set-cookie'].map(cookie => 
+        cookie.replace(/Domain=[^;]+;?\s*/gi, "")
+              .replace(/SameSite=[^;]+/gi, "SameSite=None") + "; Secure"
+      );
+    }
+
+    res.writeHead(proxyRes.statusCode, resHeaders);
+    proxyRes.pipe(res);
   });
+
+  proxyReq.on('error', (e) => {
+    res.writeHead(500);
+    res.end(e.message);
+  });
+
+  req.pipe(proxyReq);
 });
 
 const port = process.env.PORT || 10000;
-server.listen(port, () => {
-  console.log(`Proxy running on port ${port}`);
-});
+server.listen(port);
