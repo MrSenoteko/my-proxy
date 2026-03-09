@@ -10,21 +10,18 @@ const server = http.createServer((req, res) => {
     'Access-Control-Max-Age': '86400',
   };
 
-  // Отвечаем на предварительные запросы браузера (CORS)
   if (req.method === 'OPTIONS') {
     res.writeHead(204, corsHeaders);
     res.end();
     return;
   }
 
-  // 🔥 ЭТО НАШ БУДИЛЬНИК 🔥
   if (req.url === '/ping') {
     res.writeHead(200, corsHeaders);
     res.end('pong');
     return;
   }
 
-  // Направляем запросы в Google
   const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
   const options = {
     method: req.method,
@@ -33,15 +30,14 @@ const server = http.createServer((req, res) => {
     headers: { ...req.headers }
   };
 
-  // Удаляем лишнее
   delete options.headers['host'];
   delete options.headers['origin'];
   delete options.headers['referer'];
-  delete options.headers['accept-encoding']; // Чтобы данные не ломались
+  delete options.headers['accept-encoding'];
 
   const proxyReq = https.request(options, (proxyRes) => {
     const resHeaders = { ...proxyRes.headers, ...corsHeaders };
-    delete resHeaders['set-cookie']; // В Lite-версии куки не нужны
+    delete resHeaders['set-cookie'];
     res.writeHead(proxyRes.statusCode, resHeaders);
     proxyRes.pipe(res);
   });
