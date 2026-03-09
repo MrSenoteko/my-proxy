@@ -1,16 +1,13 @@
 const http = require('http');
-const https = require('https');
 
-const server = http.createServer((req, res) => {
-  // 🔥 1. Убиваем CORS и проблемные мобильные протоколы 🔥
+const server = http.createServer(async (req, res) => {
+  // CORS-заголовки
   const corsHeaders = {
     'Access-Control-Allow-Origin': req.headers.origin || '*',
     'Access-Control-Allow-Methods': 'OPTIONS, GET, POST, PUT, PATCH, DELETE',
     'Access-Control-Allow-Headers': '*',
     'Access-Control-Max-Age': '86400',
-    'Cache-Control': 'no-store, no-cache, must-revalidate',
-    // ВОТ ОНА, МАГИЯ: Строго запрещаем Chrome использовать HTTP/3 (UDP), который режут операторы РФ
-    'Alt-Svc': 'clear' 
+    'Cache-Control': 'no-store'
   };
 
   if (req.method === 'OPTIONS') {
@@ -20,73 +17,64 @@ const server = http.createServer((req, res) => {
 
   if (req.url === '/ping') {
     res.writeHead(200, corsHeaders);
-    return res.end('pong - anti-quic TCP forced');
+    return res.end('pong - strict headers allowlist active!');
   }
 
-  // 2. Надежно читаем запрос от телефона
-  let clientBody = [];
-  req.on('data', chunk => clientBody.push(chunk));
-  
-  req.on('end', () => {
-    const bodyBuffer = Buffer.concat(clientBody);
-
-    // 3. Формируем заголовки для Google
-    const proxyHeaders = { ...req.headers };
-    delete proxyHeaders['host'];
-    delete proxyHeaders['origin'];
-    delete proxyHeaders['referer'];
-    delete proxyHeaders['accept-encoding']; // Заставляем гугл отдать чистый текст
-    delete proxyHeaders['sec-ch-ua'];
-    delete proxyHeaders['sec-ch-ua-mobile'];
-    delete proxyHeaders['sec-ch-ua-platform'];
-    
-    // Всегда маскируемся под ПК для Google
-    proxyHeaders['host'] = 'firestore.googleapis.com';
-    proxyHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36';
-    
-    if (bodyBuffer.length > 0) {
-        proxyHeaders['content-length'] = bodyBuffer.length;
+  try {
+    // 1. Читаем запрос от сайта
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
     }
+    const bodyBuffer = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
 
-    const options = {
-      hostname: 'firestore.googleapis.com',
-      port: 443,
-      path: req.url,
-      method: req.method,
-      headers: proxyHeaders
+    // 🔥 2. СТРОГИЙ ФИЛЬТР ЗАГОЛОВКОВ 🔥
+    // Навсегда удаляем Save-Data и все скрытые мобильные маркеры
+    const fetchHeaders = {
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+      'accept': 'application/json'
     };
 
-    // 4. Запрашиваем данные у Google
-    const proxyReq = https.request(options, (proxyRes) => {
-      let serverBody = [];
-      proxyRes.on('data', chunk => serverBody.push(chunk));
-      
-      proxyRes.on('end', () => {
-        const finalPayload = Buffer.concat(serverBody);
-        const resHeaders = { ...proxyRes.headers, ...corsHeaders };
-        
-        // Удаляем всё, что заставляет мобилку "ждать" конца потока
-        delete resHeaders['transfer-encoding'];
-        delete resHeaders['set-cookie'];
-        
-        // Указываем телефону точный размер файла, чтобы он скачал его мгновенно
-        resHeaders['content-length'] = finalPayload.length;
-        
-        res.writeHead(proxyRes.statusCode, resHeaders);
-        res.end(finalPayload);
-      });
-    });
+    // Пропускаем ТОЛЬКО эти заголовки, остальной мусор от телефона блокируем
+    const allowed = [
+      'content-type',
+      'authorization',
+      'x-goog-api-client',
+      'x-goog-request-params',
+      'x-firebase-gmpid'
+    ];
 
-    proxyReq.on('error', (err) => {
-      res.writeHead(500, corsHeaders);
-      res.end('Proxy Error: ' + err.message);
-    });
-
-    if (bodyBuffer.length > 0) {
-      proxyReq.write(bodyBuffer);
+    for (const key of allowed) {
+      if (req.headers[key]) {
+        fetchHeaders[key] = req.headers[key];
+      }
     }
-    proxyReq.end();
-  });
+
+    // 3. Делаем идеальный запрос к Google
+    const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
+    const response = await fetch(targetUrl.toString(), {
+      method: req.method,
+      headers: fetchHeaders,
+      body: (req.method !== 'GET' && req.method !== 'HEAD') ? bodyBuffer : undefined,
+    });
+
+    // 4. Получаем данные и превращаем в простой файл
+    const responseData = await response.arrayBuffer();
+
+    const resHeaders = { ...corsHeaders };
+    if (response.headers.get('content-type')) {
+      resHeaders['content-type'] = response.headers.get('content-type');
+    }
+    resHeaders['content-length'] = responseData.byteLength;
+
+    res.writeHead(response.status, resHeaders);
+    res.end(Buffer.from(responseData));
+
+  } catch (e) {
+    res.writeHead(500, corsHeaders);
+    res.end('Error: ' + e.message);
+  }
 });
 
-server.listen(process.env.PORT || 10000, () => console.log('Anti-QUIC Proxy started'));
+const port = process.env.PORT || 10000;
+server.listen(port, () => console.log('Strict Proxy running'));
