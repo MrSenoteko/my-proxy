@@ -9,23 +9,20 @@ const server = http.createServer((req, res) => {
     'Access-Control-Max-Age': '86400'
   };
 
-  // 1. Быстрый ответ на проверку CORS
   if (req.method === 'OPTIONS') {
     res.writeHead(204, corsHeaders);
     res.end();
     return;
   }
 
-  // 2. Проверка работоспособности
   if (req.url === '/ping') {
     res.writeHead(200, corsHeaders);
     res.end('pong - proxy is alive!');
     return;
   }
 
-  // 3. Отбираем только самые необходимые заголовки (скрываем, что мы с телефона)
   const proxyHeaders = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
     'accept': req.headers['accept'] || '*/*',
     'content-type': req.headers['content-type'] || 'application/json',
   };
@@ -41,25 +38,23 @@ const server = http.createServer((req, res) => {
     headers: proxyHeaders
   };
 
-  // Читаем запрос от сайта
   let clientBody = [];
   req.on('data', chunk => clientBody.push(chunk));
   req.on('end', () => {
     
-    // Запрашиваем данные у Google
     const proxyReq = https.request(options, (proxyRes) => {
       let serverBody = [];
       
-      // 🔥 ПРОКСИ СОБИРАЕТ ВСЕ КУСОЧКИ В СЕБЯ 🔥
       proxyRes.on('data', chunk => serverBody.push(chunk));
       
-      // Когда Гугл всё отдал, отправляем ЦЕЛИКОМ на телефон
       proxyRes.on('end', () => {
         const finalBuffer = Buffer.concat(serverBody);
-        
         const resHeaders = { ...corsHeaders };
-        resHeaders['Content-Type'] = proxyRes.headers['content-type'] || 'application/json';
-        resHeaders['Content-Length'] = finalBuffer.length; // Телефон сразу знает размер
+        
+        if (proxyRes.headers['content-type']) {
+          resHeaders['Content-Type'] = proxyRes.headers['content-type'];
+        }
+        resHeaders['Content-Length'] = finalBuffer.length;
         
         res.writeHead(proxyRes.statusCode, resHeaders);
         res.end(finalBuffer);
@@ -80,7 +75,3 @@ const server = http.createServer((req, res) => {
 
 const port = process.env.PORT || 10000;
 server.listen(port, () => console.log('Buffered Proxy running on port ' + port));
-});
-
-const port = process.env.PORT || 10000;
-server.listen(port, () => console.log(`Proxy running on port ${port}`));
