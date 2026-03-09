@@ -22,22 +22,30 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  const proxyHeaders = { ...req.headers };
+
+  delete proxyHeaders['host'];
+  delete proxyHeaders['origin'];
+  delete proxyHeaders['referer'];
+  delete proxyHeaders['accept-encoding'];
+
+  proxyHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  
+  delete proxyHeaders['sec-ch-ua'];
+  delete proxyHeaders['sec-ch-ua-mobile'];
+  delete proxyHeaders['sec-ch-ua-platform'];
+
   const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
   const options = {
     method: req.method,
     hostname: 'firestore.googleapis.com',
     path: targetUrl.pathname + targetUrl.search,
-    headers: { ...req.headers }
+    headers: proxyHeaders
   };
-
-  delete options.headers['host'];
-  delete options.headers['origin'];
-  delete options.headers['referer'];
-  delete options.headers['accept-encoding'];
 
   const proxyReq = https.request(options, (proxyRes) => {
     const resHeaders = { ...proxyRes.headers, ...corsHeaders };
-    delete resHeaders['set-cookie'];
+    delete resHeaders['set-cookie']; 
     res.writeHead(proxyRes.statusCode, resHeaders);
     proxyRes.pipe(res);
   });
