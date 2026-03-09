@@ -1,55 +1,85 @@
 const http = require('http');
-const httpProxy = require('http-proxy');
-
-const proxy = httpProxy.createProxyServer({
-  target: 'https://firestore.googleapis.com',
-  changeOrigin: true,
-  secure: true
-});
-
-proxy.on('proxyRes', function (proxyRes, req, res) {
-  const origin = req.headers.origin || '*';
-  proxyRes.headers['access-control-allow-origin'] = origin;
-  proxyRes.headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS';
-  proxyRes.headers['access-control-allow-headers'] = req.headers['access-control-request-headers'] || '*';
-  proxyRes.headers['access-control-max-age'] = '86400';
-  delete proxyRes.headers['set-cookie']; 
-});
+const https = require('https');
 
 const server = http.createServer((req, res) => {
-  const origin = req.headers.origin || '*';
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+    'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
+    'Access-Control-Max-Age': '86400'
+  };
 
+  // 1. Быстрый ответ на проверку CORS
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': origin,
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-      'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
-      'Access-Control-Max-Age': '86400'
-    });
+    res.writeHead(204, corsHeaders);
     res.end();
     return;
   }
 
+  // 2. Проверка работоспособности
   if (req.url === '/ping') {
-    res.writeHead(200, { 'Access-Control-Allow-Origin': origin });
-    res.end('pong');
+    res.writeHead(200, corsHeaders);
+    res.end('pong - proxy is alive!');
     return;
   }
 
-  delete req.headers['origin'];
-  delete req.headers['referer'];
-  
-  req.headers['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-  delete req.headers['sec-ch-ua'];
-  delete req.headers['sec-ch-ua-mobile'];
-  delete req.headers['sec-ch-ua-platform'];
+  // 3. Отбираем только самые необходимые заголовки (скрываем, что мы с телефона)
+  const proxyHeaders = {
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+    'accept': req.headers['accept'] || '*/*',
+    'content-type': req.headers['content-type'] || 'application/json',
+  };
+  if (req.headers['authorization']) proxyHeaders['authorization'] = req.headers['authorization'];
+  if (req.headers['x-goog-api-client']) proxyHeaders['x-goog-api-client'] = req.headers['x-goog-api-client'];
+  if (req.headers['x-firebase-gmpid']) proxyHeaders['x-firebase-gmpid'] = req.headers['x-firebase-gmpid'];
 
-  proxy.web(req, res, (err) => {
-    if (!res.headersSent) {
-      res.writeHead(500);
-      res.end('Proxy Error');
+  const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
+  const options = {
+    method: req.method,
+    hostname: 'firestore.googleapis.com',
+    path: targetUrl.pathname + targetUrl.search,
+    headers: proxyHeaders
+  };
+
+  // Читаем запрос от сайта
+  let clientBody = [];
+  req.on('data', chunk => clientBody.push(chunk));
+  req.on('end', () => {
+    
+    // Запрашиваем данные у Google
+    const proxyReq = https.request(options, (proxyRes) => {
+      let serverBody = [];
+      
+      // 🔥 ПРОКСИ СОБИРАЕТ ВСЕ КУСОЧКИ В СЕБЯ 🔥
+      proxyRes.on('data', chunk => serverBody.push(chunk));
+      
+      // Когда Гугл всё отдал, отправляем ЦЕЛИКОМ на телефон
+      proxyRes.on('end', () => {
+        const finalBuffer = Buffer.concat(serverBody);
+        
+        const resHeaders = { ...corsHeaders };
+        resHeaders['Content-Type'] = proxyRes.headers['content-type'] || 'application/json';
+        resHeaders['Content-Length'] = finalBuffer.length; // Телефон сразу знает размер
+        
+        res.writeHead(proxyRes.statusCode, resHeaders);
+        res.end(finalBuffer);
+      });
+    });
+
+    proxyReq.on('error', (e) => {
+      res.writeHead(500, corsHeaders);
+      res.end('Proxy Error: ' + e.message);
+    });
+
+    if (clientBody.length > 0) {
+      proxyReq.write(Buffer.concat(clientBody));
     }
+    proxyReq.end();
   });
+});
+
+const port = process.env.PORT || 10000;
+server.listen(port, () => console.log('Buffered Proxy running on port ' + port));
 });
 
 const port = process.env.PORT || 10000;
