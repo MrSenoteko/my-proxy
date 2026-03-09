@@ -2,78 +2,70 @@ const http = require('http');
 const https = require('https');
 
 const server = http.createServer((req, res) => {
+  // CORS-заголовки для браузера
   const corsHeaders = {
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-    'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
-    'Access-Control-Max-Age': '86400',
-    // 🔥 ЗАПРЕЩАЕМ МОБИЛЬНЫМ ОПТИМИЗАТОРАМ ТРОГАТЬ ДАННЫЕ 🔥
-    'Cache-Control': 'no-transform, no-store',
-    'X-Content-Type-Options': 'nosniff'
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'OPTIONS, GET, POST, PUT, PATCH, DELETE',
+    'Access-Control-Allow-Headers': '*',
+    'Access-Control-Max-Age': '86400'
   };
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, corsHeaders);
-    res.end();
-    return;
+    return res.end();
   }
 
   if (req.url === '/ping') {
     res.writeHead(200, corsHeaders);
-    res.end('pong - turbo mobile fix applied');
-    return;
+    return res.end('pong - final stream fix');
   }
 
-  // Маскировка под ПК (удаляем все следы мобилки)
-  const proxyHeaders = { ...req.headers };
-  delete proxyHeaders['host'];
-  delete proxyHeaders['origin'];
-  delete proxyHeaders['referer'];
-  proxyHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-  proxyHeaders['sec-ch-ua-mobile'] = '?0';
-  proxyHeaders['sec-ch-ua-platform'] = '"Windows"';
-
-  const targetUrl = new URL(req.url, 'https://firestore.googleapis.com');
+  // Настраиваем запрос к Google
   const options = {
-    method: req.method,
     hostname: 'firestore.googleapis.com',
-    path: targetUrl.pathname + targetUrl.search,
-    headers: proxyHeaders
+    port: 443,
+    path: req.url,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: 'firestore.googleapis.com',
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'
+    }
   };
 
-  // 📦 СОБИРАЕМ ТЕЛО ЗАПРОСА (для POST запросов Firestore Lite)
-  let body = [];
-  req.on('data', (chunk) => body.push(chunk));
-  req.on('end', () => {
-    const data = Buffer.concat(body);
+  // Удаляем всё, что может выдать мобильный телефон или сломать кодировку
+  delete options.headers['origin'];
+  delete options.headers['referer'];
+  delete options.headers['sec-ch-ua'];
+  delete options.headers['sec-ch-ua-mobile'];
+  delete options.headers['sec-ch-ua-platform'];
+  delete options.headers['accept-encoding']; 
 
-    const proxyReq = https.request(options, (proxyRes) => {
-      let responseData = [];
-      proxyRes.on('data', (chunk) => responseData.push(chunk));
+  // Отправляем запрос в Google
+  const proxyReq = https.request(options, (proxyRes) => {
+    let body = [];
+    proxyRes.on('data', (chunk) => body.push(chunk));
+    
+    proxyRes.on('end', () => {
+      const payload = Buffer.concat(body);
+      const resHeaders = { ...proxyRes.headers, ...corsHeaders };
       
-      proxyRes.on('end', () => {
-        const finalBuffer = Buffer.concat(responseData);
-        const resHeaders = { ...proxyRes.headers, ...corsHeaders };
-        
-        // 🔥 УДАЛЯЕМ ПРИЗНАК "ПОТОКА", ЧТОБЫ МОБИЛКА НЕ ЖДАЛА 🔥
-        delete resHeaders['transfer-encoding'];
-        resHeaders['Content-Length'] = finalBuffer.length;
-        resHeaders['Connection'] = 'keep-alive';
-
-        res.writeHead(proxyRes.statusCode, resHeaders);
-        res.end(finalBuffer);
-      });
+      delete resHeaders['set-cookie'];
+      delete resHeaders['transfer-encoding']; // Убираем бесконечный поток для мобилки
+      resHeaders['content-length'] = payload.length; // Говорим телефону точный размер
+      
+      res.writeHead(proxyRes.statusCode, resHeaders);
+      res.end(payload);
     });
-
-    proxyReq.on('error', (e) => {
-      res.writeHead(500, corsHeaders);
-      res.end('Error: ' + e.message);
-    });
-
-    if (data.length > 0) proxyReq.write(data);
-    proxyReq.end();
   });
+
+  proxyReq.on('error', (err) => {
+    res.writeHead(500, corsHeaders);
+    res.end(err.message);
+  });
+
+  // 🔥 САМОЕ ГЛАВНОЕ: Прямая труба от телефона к Гуглу без ручного ожидания 🔥
+  req.pipe(proxyReq);
 });
 
-const port = process.env.PORT || 10000;
-server.listen(port, () => console.log('Proxy running on port ' + port));
+server.listen(process.env.PORT || 10000, () => console.log('Direct pipe proxy running'));
